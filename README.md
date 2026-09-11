@@ -1,6 +1,6 @@
 # Zepto AI Capstone Project
 
-This project is developed as part of the Zepto AI Capstone. It contains modules for data engineering, analytics, and an AI-based customer support assistant.
+This project is developed as part of the Zepto AI Capstone. It contains three connected modules for data engineering, data analytics and machine learning, and an AI-based customer support assistant.
 
 ---
 
@@ -83,69 +83,100 @@ The SQL JOIN result is compared with a pandas `merge()` operation to verify that
 
 ## Module 2 - Data Analytics and Machine Learning
 
-The Analytics module performs exploratory data analysis and machine learning on the cleaned book dataset.
+The Analytics module performs exploratory data analysis and machine learning using the Titanic dataset.
 
 The module includes:
 
-- Data exploration
+- Data profiling and cleaning
+- Missing-value analysis
 - Statistical analysis
+- Outlier analysis
 - Data visualization
-- Feature preparation
-- Machine learning modeling
+- Feature preprocessing
+- Classification modeling
+- Imbalance handling
+- Hyperparameter tuning
+- Regression analysis
 - Model evaluation
 
-The analytics code is available in the `analytics` directory.
+The analytics workflow is implemented using:
+
+- `analytics/01_eda.py`
+- `analytics/02_modeling.py`
+
+A committed `titanic.csv` file provides the offline dataset used by the analytics pipeline.
+
+The final fitted machine-learning pipeline is saved as a Joblib artifact so that preprocessing and prediction can be reused together.
 
 ---
 
 ## Module 3 - Zepto AI Support Assistant
 
-Module 3 implements an offline AI-powered customer support assistant for Zepto.
+Module 3 implements an offline GenAI customer support assistant for Zepto.
 
 It uses a local Zepto policy knowledge base together with Sentence Transformers, ChromaDB, LangGraph, Pydantic, and FastAPI.
 
 ### Policy Knowledge Base
 
-The assistant uses 8 local documents covering:
+The assistant uses 8 local policy documents:
 
-- Delivery Policy
-- Returns & Refunds
-- Membership Tiers
-- Order Tracking
-- Order Cancellation Policy
-- Damaged or Missing Items
-- Gift Cards
-- Customer Support Hours
+- `doc_01` - Delivery Policy
+- `doc_02` - Returns & Refunds
+- `doc_03` - Membership Tiers
+- `doc_04` - Order Tracking
+- `doc_05` - Order Cancellation Policy
+- `doc_06` - Damaged or Missing Items
+- `doc_07` - Gift Cards
+- `doc_08` - Customer Support Hours
 
 ### Embeddings and ChromaDB
 
-The policy documents are embedded using:
+The policy documents are embedded locally using the Sentence Transformers model:
 
 ```text
 all-MiniLM-L6-v2
 ```
 
-The embeddings and documents are stored in a persistent ChromaDB collection.
+The document embeddings are stored in a persistent ChromaDB collection.
 
-For a policy-related customer query, the system retrieves the top 3 most relevant documents.
+For policy-related customer queries, the system embeds the incoming query and retrieves the top 3 most similar documents from ChromaDB.
+
+### Structured Prompt
+
+The project includes a structured prompt template containing:
+
+- Role
+- Context
+- Task
+- Output format
+- Length instruction
+- Explicit negative constraint
+- Few-shot example
+
+The prompt instructs the assistant not to answer using information that is not present in the provided context.
 
 ### LangGraph Architecture
 
-The workflow is:
+The support workflow is:
 
 ```text
 Customer Query
-      ↓
+      |
+      v
 Intent Classification
-      ↓
+      |
+      v
 Conditional Routing
-   ↙       ↘
-Policy    General
-Question  Question
-   ↓         ↓
-Retrieve   Direct
-& Answer   Answer
-   ↘         ↙
+   /           \
+Policy        General
+Question      Question
+   |             |
+   v             v
+Retrieve       Direct
+& Answer       Answer
+   \             /
+    \           /
+     v         v
 Structured JSON Response
 ```
 
@@ -155,6 +186,8 @@ The LangGraph workflow contains three main nodes:
 2. `retrieve_and_answer`
 3. `direct_answer`
 
+Policy-related queries are routed to the retrieval workflow, while unrelated general queries are routed to the direct-answer workflow.
+
 ### Offline Mock Mode
 
 The graded baseline operates in deterministic offline mock mode:
@@ -163,9 +196,9 @@ The graded baseline operates in deterministic offline mock mode:
 MOCK_LLM = 1
 ```
 
-No external LLM or API key is required.
+No external LLM or LLM API key is required.
 
-Policy questions use local retrieval, while unrelated general questions receive a fixed response.
+The mock classifier identifies policy questions using the required policy keywords. Policy questions use local ChromaDB retrieval, while unrelated general questions receive a deterministic fixed response.
 
 ### Structured Output
 
@@ -179,26 +212,26 @@ The final response is validated using a Pydantic schema containing:
 }
 ```
 
+The `confidence` value is constrained between 0 and 1.
+
+For general questions, the `sources` list is empty.
+
 ### FastAPI
 
 The support assistant is exposed through a FastAPI application.
-
-Start the API from the project root using:
-
-```bash
-uvicorn support_assistant.main:app
-```
-
-Then open Swagger UI at:
-
-```text
-http://127.0.0.1:8000/docs
-```
 
 The main endpoint is:
 
 ```text
 POST /ask
+```
+
+The request format is:
+
+```json
+{
+  "query": "customer question"
+}
 ```
 
 ### Example - Policy Question
@@ -271,9 +304,31 @@ support_assistant/
 
 ---
 
+## Project Structure
+
+The capstone is organized into three connected modules:
+
+```text
+Zepto_AI_Capstone/
+├── data_pipeline/
+├── analytics/
+├── support_assistant/
+├── Dockerfile
+├── README.md
+└── requirements.txt
+```
+
+- `data_pipeline/` - Collects, cleans, converts, and stores book data in SQLite.
+- `analytics/` - Performs exploratory data analysis and machine-learning modeling using the Titanic dataset.
+- `support_assistant/` - Implements the Zepto policy support assistant.
+
+---
+
 ## Installation
 
-Create and activate a Python virtual environment, then install the required packages:
+Create and activate a Python virtual environment.
+
+Install the required packages from the project root:
 
 ```bash
 pip install -r requirements.txt
@@ -281,9 +336,57 @@ pip install -r requirements.txt
 
 ---
 
+## How to Run the Project
+
+### Data Pipeline
+
+Run the data pipeline from the project root:
+
+```bash
+python data_pipeline/pipeline.py
+```
+
+### Analytics
+
+Run the exploratory data analysis:
+
+```bash
+python analytics/01_eda.py
+```
+
+Run the machine-learning pipeline:
+
+```bash
+python analytics/02_modeling.py
+```
+
+### Support Assistant
+
+First, initialize the local policy document embeddings and ChromaDB collection:
+
+```bash
+python support_assistant/app.py
+```
+
+Then start the FastAPI application:
+
+```bash
+uvicorn support_assistant.main:app
+```
+
+After the server starts, open the FastAPI Swagger UI in the browser at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Use the `POST /ask` endpoint to test the Zepto Support Assistant.
+
+---
+
 ## Docker
 
-A Dockerfile is provided at the project root.
+A `Dockerfile` is provided at the project root.
 
 Build the Docker image using:
 
@@ -297,16 +400,19 @@ Run the container using:
 docker run -p 7860:7860 zepto-support
 ```
 
-The container serves the FastAPI application on port `7860`.
+The container is configured to serve the FastAPI application on port `7860`.
 
 ---
 
 ## Technologies Used
 
 - Python
+- Requests
+- BeautifulSoup
 - Pandas
 - SQLite
 - Scikit-learn
+- Joblib
 - Sentence Transformers
 - ChromaDB
 - LangGraph
@@ -322,6 +428,8 @@ The container serves the FastAPI application on port `7860`.
 - Module 1 - Data Pipeline: Completed
 - Module 2 - Analytics and Machine Learning: Completed
 - Module 3 - AI Support Assistant: Completed
-- FastAPI `/ask` endpoint: Tested successfully
+- FastAPI `POST /ask` endpoint: Tested successfully
 - Offline mock mode: Implemented
+- Structured Pydantic response: Implemented
+- ChromaDB retrieval: Implemented
 - Dockerfile: Created
