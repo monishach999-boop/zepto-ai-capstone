@@ -1,0 +1,12 @@
+Ticket: I need help with my payment
+Category: billing
+Response: Billing team will handle your request.
+----------------------------------------
+Ticket: I want to apply for leave
+Category: hr
+Response: HR team will handle your request.
+----------------------------------------
+Ticket: I cannot login to my account
+Category: general
+Response: General support team will handle your request.
+----------------------------------------
