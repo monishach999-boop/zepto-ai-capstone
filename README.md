@@ -325,3 +325,10 @@ The container serves the FastAPI application on port `7860`.
 - FastAPI `/ask` endpoint: Tested successfully
 - Offline mock mode: Implemented
 - Dockerfile: Created
+## Project Structure
+
+The capstone is organized into three connected modules:
+
+- `data_pipeline/` - Collects, cleans, converts, and stores book data in SQLite.
+- `analytics/` - Performs exploratory data analysis and machine-learning modeling using the Titanic dataset.
+- `support_assistant/` - Provides the Zepto policy support assistant using Sentence Transformers, ChromaDB, LangGraph, Pydantic, and FastAPI.
