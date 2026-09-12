@@ -1,16 +1,21 @@
 # Module 3 - LangGraph Support Workflow
 
-from typing import TypedDict
+import os
 from pathlib import Path
+from typing import TypedDict
 
 import chromadb
 from sentence_transformers import SentenceTransformer
 from langgraph.graph import StateGraph, START, END
 
 from support_assistant.schemas import SupportResponse
+from support_assistant.prompt_template import PROMPT_TEMPLATE
 
 
-# State used by LangGraph
+# =========================================================
+# STATE
+# =========================================================
+
 class SupportState(TypedDict):
     query: str
     intent: str
@@ -20,11 +25,19 @@ class SupportState(TypedDict):
     confidence: float
 
 
-# Mock mode required for grading
-MOCK_LLM = 1
+# =========================================================
+# MOCK MODE
+# Default: MOCK_LLM unset or MOCK_LLM=1
+# Optional real mode: MOCK_LLM=0
+# =========================================================
+
+MOCK_LLM = os.getenv("MOCK_LLM", "1") != "0"
 
 
-# Policy keywords used for deterministic routing
+# =========================================================
+# POLICY KEYWORDS
+# =========================================================
+
 POLICY_KEYWORDS = [
     "delivery",
     "return",
@@ -37,42 +50,74 @@ POLICY_KEYWORDS = [
 ]
 
 
-# Paths
+# =========================================================
+# PATHS + CHROMADB
+# =========================================================
+
 BASE_DIR = Path(__file__).parent
 CHROMA_DIR = BASE_DIR / "chroma_db"
 
 
-# Load ChromaDB
 client = chromadb.PersistentClient(
     path=str(CHROMA_DIR)
 )
+
 
 collection = client.get_collection(
     name="zepto_support_docs"
 )
 
 
-# Load local embedding model
+# Local embedding model
 model = SentenceTransformer(
     "all-MiniLM-L6-v2"
 )
 
 
-# Node 1 - Classify intent
+# =========================================================
+# NODE 1 - CLASSIFY INTENT
+# =========================================================
+
 def classify_intent(state: SupportState):
+
     query = state["query"].lower()
 
-    if any(keyword in query for keyword in POLICY_KEYWORDS):
-        return {
-            "intent": "policy_question"
-        }
+    if MOCK_LLM:
+
+        # Deterministic grading mode
+        if any(
+            keyword in query
+            for keyword in POLICY_KEYWORDS
+        ):
+            intent = "policy_question"
+
+        else:
+            intent = "general_question"
+
+    else:
+
+        # Optional real-LLM mode can be connected here.
+        # For now we keep the same deterministic fallback
+        # so the application remains runnable without an API.
+        if any(
+            keyword in query
+            for keyword in POLICY_KEYWORDS
+        ):
+            intent = "policy_question"
+
+        else:
+            intent = "general_question"
+
 
     return {
-        "intent": "general_question"
+        "intent": intent
     }
 
 
-# Router
+# =========================================================
+# ROUTER
+# =========================================================
+
 def route_query(state: SupportState):
 
     if state["intent"] == "policy_question":
@@ -81,28 +126,59 @@ def route_query(state: SupportState):
     return "direct"
 
 
-# Node 2 - Retrieve top 3 documents and answer
+# =========================================================
+# NODE 2 - RETRIEVE + ANSWER
+# =========================================================
+
 def retrieve_and_answer(state: SupportState):
 
+    # Retrieval always runs locally using embeddings
     query_embedding = model.encode(
         [state["query"]]
     ).tolist()
+
 
     results = collection.query(
         query_embeddings=query_embedding,
         n_results=3
     )
 
+
     documents = results["documents"][0]
     source_ids = results["ids"][0]
 
+
     context = "\n".join(documents)
 
-    # Deterministic MOCK_LLM response
-    answer = (
-        "Based on the retrieved context: "
-        + documents[0][:200]
+
+    # Build the structured prompt
+    formatted_prompt = PROMPT_TEMPLATE.format(
+        context=context,
+        query=state["query"]
     )
+
+
+    if MOCK_LLM:
+
+        # Exact deterministic mock answer required for grading
+        top_chunk_snippet = documents[0][:200]
+
+        answer = (
+            "Based on the retrieved context: "
+            + top_chunk_snippet
+        )
+
+    else:
+
+        # Optional real-LLM integration point.
+        # The project does not require a paid API for grading.
+        # Keep a deterministic fallback when no real provider
+        # has been configured.
+        answer = (
+            "Based on the retrieved context: "
+            + documents[0][:200]
+        )
+
 
     return {
         "context": context,
@@ -112,9 +188,13 @@ def retrieve_and_answer(state: SupportState):
     }
 
 
-# Node 3 - Direct response for general questions
+# =========================================================
+# NODE 3 - DIRECT ANSWER
+# =========================================================
+
 def direct_answer(state: SupportState):
 
+    # General questions do not use retrieval or an LLM.
     return {
         "answer": (
             "I can only answer questions "
@@ -125,18 +205,26 @@ def direct_answer(state: SupportState):
     }
 
 
-# Build LangGraph
-builder = StateGraph(SupportState)
+# =========================================================
+# BUILD LANGGRAPH
+# =========================================================
+
+builder = StateGraph(
+    SupportState
+)
+
 
 builder.add_node(
     "classify_intent",
     classify_intent
 )
 
+
 builder.add_node(
     "retrieve_and_answer",
     retrieve_and_answer
 )
+
 
 builder.add_node(
     "direct_answer",
@@ -144,14 +232,12 @@ builder.add_node(
 )
 
 
-# Start
 builder.add_edge(
     START,
     "classify_intent"
 )
 
 
-# Conditional routing
 builder.add_conditional_edges(
     "classify_intent",
     route_query,
@@ -162,11 +248,11 @@ builder.add_conditional_edges(
 )
 
 
-# End
 builder.add_edge(
     "retrieve_and_answer",
     END
 )
+
 
 builder.add_edge(
     "direct_answer",
@@ -174,12 +260,20 @@ builder.add_edge(
 )
 
 
-# Compile graph
 graph = builder.compile()
 
 
-# Test the workflow
+# =========================================================
+# LOCAL TEST
+# =========================================================
+
 if __name__ == "__main__":
+
+    print(
+        "MOCK_LLM mode:",
+        MOCK_LLM
+    )
+
 
     test_state: SupportState = {
         "query": "What is Zepto's refund policy?",
@@ -190,19 +284,35 @@ if __name__ == "__main__":
         "confidence": 0.0
     }
 
-    result = graph.invoke(test_state)
 
-    # Validate using Pydantic
+    result = graph.invoke(
+        test_state
+    )
+
+
     validated = SupportResponse(
         answer=result["answer"],
         sources=result["sources"],
         confidence=result["confidence"]
     )
 
-    print("Query:", result["query"])
-    print("Intent:", result["intent"])
 
-    print("\nValidated JSON Response:")
+    print(
+        "Query:",
+        result["query"]
+    )
+
+
+    print(
+        "Intent:",
+        result["intent"]
+    )
+
+
+    print(
+        "\nValidated JSON Response:"
+    )
+
 
     print(
         validated.model_dump_json(
