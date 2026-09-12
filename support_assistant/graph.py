@@ -1,10 +1,13 @@
 # Module 3 - LangGraph Support Workflow
 
 import os
+import time
 from pathlib import Path
 from typing import TypedDict
 
 import chromadb
+import numpy as np
+import requests
 from sentence_transformers import SentenceTransformer
 from langgraph.graph import StateGraph, START, END
 
@@ -26,12 +29,19 @@ class SupportState(TypedDict):
 
 
 # =========================================================
-# MOCK MODE
-# Default: MOCK_LLM unset or MOCK_LLM=1
-# Optional real mode: MOCK_LLM=0
+# MOCK / OPTIONAL REAL LLM MODE
 # =========================================================
 
+# Default graded mode:
+# MOCK_LLM unset or MOCK_LLM=1 -> deterministic mock mode
+# MOCK_LLM=0 -> optional real-LLM extension
 MOCK_LLM = os.getenv("MOCK_LLM", "1") != "0"
+
+# Optional Groq configuration for MOCK_LLM=0
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "").strip()
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 # =========================================================
@@ -75,38 +85,276 @@ model = SentenceTransformer(
 
 
 # =========================================================
+# HELPER: DETERMINISTIC MOCK CLASSIFICATION
+# =========================================================
+
+def mock_classify(query: str) -> str:
+
+    query_lower = query.lower()
+
+    if any(
+        keyword in query_lower
+        for keyword in POLICY_KEYWORDS
+    ):
+        return "policy_question"
+
+    return "general_question"
+
+
+# =========================================================
+# HELPER: OPTIONAL REAL LLM CALL WITH RETRY
+# =========================================================
+
+def call_real_llm(
+    prompt: str,
+    max_retries: int = 2
+):
+
+    # Real LLM mode is optional and ungraded.
+    # If credentials are absent, return None so the
+    # deterministic fallback can still keep the app usable.
+    if not GROQ_API_KEY or not GROQ_MODEL:
+
+        print(
+            "Real-LLM configuration not found. "
+            "Using deterministic fallback."
+        )
+
+        return None
+
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0
+    }
+
+
+    for attempt in range(
+        1,
+        max_retries + 1
+    ):
+
+        try:
+
+            response = requests.post(
+                GROQ_URL,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            return (
+                data["choices"][0]
+                ["message"]
+                ["content"]
+                .strip()
+            )
+
+
+        except (
+            requests.RequestException,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError
+        ) as error:
+
+            print(
+                f"Real-LLM attempt {attempt} failed:",
+                error
+            )
+
+            if attempt < max_retries:
+
+                # Small retry delay
+                time.sleep(attempt)
+
+
+    print(
+        "Real-LLM retries exhausted. "
+        "Using deterministic fallback."
+    )
+
+    return None
+
+
+# =========================================================
+# HELPER: TOP-3 COSINE RETRIEVAL FROM CHROMADB
+# =========================================================
+
+def retrieve_top_3_cosine(
+    query_embedding
+):
+
+    # Read locally stored documents and embeddings
+    stored = collection.get(
+        include=[
+            "documents",
+            "embeddings"
+        ]
+    )
+
+
+    ids = stored["ids"]
+    documents = stored["documents"]
+
+    stored_embeddings = np.array(
+        stored["embeddings"],
+        dtype=float
+    )
+
+    query_vector = np.array(
+        query_embedding,
+        dtype=float
+    )
+
+
+    # Cosine similarity:
+    # dot(a,b) / (||a|| * ||b||)
+    query_norm = np.linalg.norm(
+        query_vector
+    )
+
+    document_norms = np.linalg.norm(
+        stored_embeddings,
+        axis=1
+    )
+
+
+    similarities = (
+        stored_embeddings
+        @ query_vector
+    ) / (
+        document_norms
+        * query_norm
+        + 1e-12
+    )
+
+
+    # Highest cosine similarities first
+    top_indices = np.argsort(
+        similarities
+    )[::-1][:3]
+
+
+    top_documents = [
+        documents[index]
+        for index in top_indices
+    ]
+
+    top_ids = [
+        ids[index]
+        for index in top_indices
+    ]
+
+
+    return (
+        top_documents,
+        top_ids
+    )
+
+
+# =========================================================
 # NODE 1 - CLASSIFY INTENT
 # =========================================================
 
-def classify_intent(state: SupportState):
+def classify_intent(
+    state: SupportState
+):
 
-    query = state["query"].lower()
+    query = state["query"]
+
 
     if MOCK_LLM:
 
-        # Deterministic grading mode
-        if any(
-            keyword in query
-            for keyword in POLICY_KEYWORDS
-        ):
-            intent = "policy_question"
+        # Required deterministic graded baseline
+        intent = mock_classify(
+            query
+        )
 
-        else:
-            intent = "general_question"
 
     else:
 
-        # Optional real-LLM mode can be connected here.
-        # For now we keep the same deterministic fallback
-        # so the application remains runnable without an API.
-        if any(
-            keyword in query
-            for keyword in POLICY_KEYWORDS
-        ):
-            intent = "policy_question"
+        # Optional real-LLM classification
+        classification_prompt = f"""
+Classify the following customer query into exactly one label:
+
+policy_question
+general_question
+
+Use policy_question when the query concerns Zepto policies such as
+delivery, returns, refunds, membership, tracking, cancellation,
+gift cards, or support hours.
+
+Return only one label and nothing else.
+
+Query:
+{query}
+"""
+
+
+        llm_result = call_real_llm(
+            classification_prompt
+        )
+
+
+        if llm_result:
+
+            cleaned_result = (
+                llm_result
+                .strip()
+                .lower()
+            )
+
+            if (
+                cleaned_result
+                == "policy_question"
+            ):
+
+                intent = (
+                    "policy_question"
+                )
+
+            elif (
+                cleaned_result
+                == "general_question"
+            ):
+
+                intent = (
+                    "general_question"
+                )
+
+            else:
+
+                # Safe fallback when LLM returns
+                # an unexpected format
+                intent = mock_classify(
+                    query
+                )
 
         else:
-            intent = "general_question"
+
+            # Retry failure / missing configuration
+            # falls back deterministically
+            intent = mock_classify(
+                query
+            )
 
 
     return {
@@ -118,9 +366,17 @@ def classify_intent(state: SupportState):
 # ROUTER
 # =========================================================
 
-def route_query(state: SupportState):
+def route_query(
+    state: SupportState
+):
 
-    if state["intent"] == "policy_question":
+    # Routing depends only on the intent stored in state.
+    # It does NOT directly depend on MOCK_LLM.
+
+    if (
+        state["intent"]
+        == "policy_question"
+    ):
         return "retrieve"
 
     return "direct"
@@ -130,54 +386,79 @@ def route_query(state: SupportState):
 # NODE 2 - RETRIEVE + ANSWER
 # =========================================================
 
-def retrieve_and_answer(state: SupportState):
+def retrieve_and_answer(
+    state: SupportState
+):
 
-    # Retrieval always runs locally using embeddings
-    query_embedding = model.encode(
-        [state["query"]]
-    ).tolist()
-
-
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=3
+    # Retrieval always runs locally in both modes.
+    query_embedding = (
+        model.encode(
+            state["query"]
+        )
+        .tolist()
     )
 
 
-    documents = results["documents"][0]
-    source_ids = results["ids"][0]
+    # Explicit cosine-similarity retrieval
+    documents, source_ids = (
+        retrieve_top_3_cosine(
+            query_embedding
+        )
+    )
 
 
-    context = "\n".join(documents)
+    context = "\n\n".join(
+        documents
+    )
 
 
-    # Build the structured prompt
-    formatted_prompt = PROMPT_TEMPLATE.format(
-        context=context,
-        query=state["query"]
+    # Structured prompt
+    formatted_prompt = (
+        PROMPT_TEMPLATE.format(
+            context=context,
+            query=state["query"]
+        )
     )
 
 
     if MOCK_LLM:
 
-        # Exact deterministic mock answer required for grading
-        top_chunk_snippet = documents[0][:200]
+        # Exact deterministic mock answer
+        # required by the assignment
+        top_chunk_snippet = (
+            documents[0][:200]
+        )
 
         answer = (
             "Based on the retrieved context: "
             + top_chunk_snippet
         )
 
+
     else:
 
-        # Optional real-LLM integration point.
-        # The project does not require a paid API for grading.
-        # Keep a deterministic fallback when no real provider
-        # has been configured.
-        answer = (
-            "Based on the retrieved context: "
-            + documents[0][:200]
+        # Optional real LLM generation
+        real_answer = call_real_llm(
+            formatted_prompt
         )
+
+
+        if real_answer:
+
+            answer = real_answer
+
+        else:
+
+            # Retry failure / missing optional
+            # configuration -> deterministic fallback
+            top_chunk_snippet = (
+                documents[0][:200]
+            )
+
+            answer = (
+                "Based on the retrieved context: "
+                + top_chunk_snippet
+            )
 
 
     return {
@@ -192,9 +473,12 @@ def retrieve_and_answer(state: SupportState):
 # NODE 3 - DIRECT ANSWER
 # =========================================================
 
-def direct_answer(state: SupportState):
+def direct_answer(
+    state: SupportState
+):
 
-    # General questions do not use retrieval or an LLM.
+    # General questions require no retrieval
+    # and no LLM call in the graded baseline.
     return {
         "answer": (
             "I can only answer questions "
@@ -242,8 +526,11 @@ builder.add_conditional_edges(
     "classify_intent",
     route_query,
     {
-        "retrieve": "retrieve_and_answer",
-        "direct": "direct_answer"
+        "retrieve":
+            "retrieve_and_answer",
+
+        "direct":
+            "direct_answer"
     }
 )
 
@@ -275,8 +562,14 @@ if __name__ == "__main__":
     )
 
 
-    test_state: SupportState = {
-        "query": "What is Zepto's refund policy?",
+    # -----------------------------------------------------
+    # POLICY QUESTION TEST
+    # -----------------------------------------------------
+
+    policy_state: SupportState = {
+        "query":
+            "What is Zepto's refund policy?",
+
         "intent": "",
         "context": "",
         "answer": "",
@@ -285,37 +578,101 @@ if __name__ == "__main__":
     }
 
 
-    result = graph.invoke(
-        test_state
+    policy_result = graph.invoke(
+        policy_state
     )
 
 
-    validated = SupportResponse(
-        answer=result["answer"],
-        sources=result["sources"],
-        confidence=result["confidence"]
+    policy_validated = (
+        SupportResponse(
+            answer=
+                policy_result["answer"],
+
+            sources=
+                policy_result["sources"],
+
+            confidence=
+                policy_result["confidence"]
+        )
     )
 
 
     print(
-        "Query:",
-        result["query"]
+        "\nPolicy Query:",
+        policy_result["query"]
     )
-
 
     print(
         "Intent:",
-        result["intent"]
+        policy_result["intent"]
+    )
+
+    print(
+        "\nValidated Policy JSON Response:"
+    )
+
+    print(
+        policy_validated
+        .model_dump_json(
+            indent=2
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # GENERAL QUESTION TEST
+    # -----------------------------------------------------
+
+    general_state: SupportState = {
+        "query":
+            "Who is the Prime Minister of India?",
+
+        "intent": "",
+        "context": "",
+        "answer": "",
+        "sources": [],
+        "confidence": 0.0
+    }
+
+
+    general_result = graph.invoke(
+        general_state
+    )
+
+
+    general_validated = (
+        SupportResponse(
+            answer=
+                general_result["answer"],
+
+            sources=
+                general_result["sources"],
+
+            confidence=
+                general_result[
+                    "confidence"
+                ]
+        )
     )
 
 
     print(
-        "\nValidated JSON Response:"
+        "\nGeneral Query:",
+        general_result["query"]
     )
 
+    print(
+        "Intent:",
+        general_result["intent"]
+    )
 
     print(
-        validated.model_dump_json(
+        "\nValidated General JSON Response:"
+    )
+
+    print(
+        general_validated
+        .model_dump_json(
             indent=2
         )
     )
