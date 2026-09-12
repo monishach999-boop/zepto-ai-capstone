@@ -27,7 +27,8 @@ from sklearn.metrics import (
     precision_score,
     r2_score,
     recall_score,
-    roc_auc_score
+    roc_auc_score,
+    roc_curve
 )
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
@@ -51,15 +52,14 @@ MODEL_PATH = BASE_DIR / "titanic_survival_pipeline.joblib"
 
 print("\n========== TASK 7: STRATIFIED TRAIN-TEST SPLIT ==========")
 
-# Load the committed offline Titanic dataset.
-# No second sns.load_dataset() call is used here.
+# Load committed offline Titanic dataset
 df = pd.read_csv(DATA_PATH)
 
 print("\nDataset loaded successfully.")
 print("Dataset shape:", df.shape)
 
 
-# Classification target
+# Target
 y = df["survived"]
 
 # Features
@@ -73,7 +73,7 @@ print("\nOverall class proportions:")
 print(y.value_counts(normalize=True).round(4))
 
 
-# Stratified split
+# Stratified train-test split
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
@@ -86,10 +86,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 print("\nTraining shape:", X_train.shape)
 print("Testing shape:", X_test.shape)
 
-
 print("\nTraining class proportions:")
 print(y_train.value_counts(normalize=True).round(4))
-
 
 print("\nTesting class proportions:")
 print(y_test.value_counts(normalize=True).round(4))
@@ -98,9 +96,9 @@ print(y_test.value_counts(normalize=True).round(4))
 print("\nStratification Justification:")
 print(
     "The Titanic target classes are not perfectly balanced. "
-    "A stratified split preserves approximately the same "
-    "survived/not-survived proportion in both training and "
-    "testing sets, making model evaluation more reliable."
+    "Stratification preserves approximately the same survived and "
+    "not-survived proportions in both training and testing sets, "
+    "which makes model evaluation more reliable."
 )
 
 
@@ -111,7 +109,6 @@ print(
 print("\n========== TASK 8: PREPROCESSING PIPELINE ==========")
 
 
-# Selected useful features
 numeric_features = [
     "age",
     "pclass",
@@ -125,14 +122,14 @@ categorical_features = [
     "embarked"
 ]
 
-
 selected_features = numeric_features + categorical_features
+
 
 X_train_model = X_train[selected_features].copy()
 X_test_model = X_test[selected_features].copy()
 
 
-# Numeric pipeline
+# Numeric preprocessing
 numeric_pipeline = Pipeline(
     steps=[
         (
@@ -147,7 +144,7 @@ numeric_pipeline = Pipeline(
 )
 
 
-# Categorical pipeline
+# Categorical preprocessing
 categorical_pipeline = Pipeline(
     steps=[
         (
@@ -156,15 +153,13 @@ categorical_pipeline = Pipeline(
         ),
         (
             "encoder",
-            OneHotEncoder(
-                handle_unknown="ignore"
-            )
+            OneHotEncoder(handle_unknown="ignore")
         )
     ]
 )
 
 
-# Combined transformer
+# Combined preprocessing
 preprocessor = ColumnTransformer(
     transformers=[
         (
@@ -182,19 +177,13 @@ preprocessor = ColumnTransformer(
 
 
 print(
-    "Preprocessing includes median imputation, "
-    "categorical imputation, one-hot encoding, "
-    "and numeric standardization."
+    "Preprocessing includes median imputation, categorical "
+    "imputation, one-hot encoding, and numeric standardization."
 )
 
 print(
-    "The preprocessing pipeline is fitted only "
-    "when model.fit() is called on X_train."
-)
-
-print(
-    "The test data is transformed using the "
-    "parameters learned from training data only."
+    "All preprocessing is fitted only on the training data. "
+    "The test data is transform-only."
 )
 
 
@@ -288,10 +277,7 @@ tree_classifier = decision_tree_model.named_steps[
 ]
 
 
-feature_names = (
-    tree_preprocessor
-    .get_feature_names_out()
-)
+feature_names = tree_preprocessor.get_feature_names_out()
 
 
 plt.figure(figsize=(22, 12))
@@ -309,9 +295,7 @@ plot_tree(
     fontsize=8
 )
 
-plt.title(
-    "Decision Tree - Titanic Survival"
-)
+plt.title("Decision Tree - Titanic Survival")
 
 plt.tight_layout()
 plt.show()
@@ -327,6 +311,10 @@ print("\n========== TASK 10: MODEL EVALUATION ==========")
 classification_rows = []
 
 
+# ROC curve figure
+plt.figure(figsize=(8, 6))
+
+
 for name, model in models.items():
 
     y_pred = model.predict(
@@ -338,11 +326,14 @@ for name, model in models.items():
     )[:, 1]
 
 
+    # Confusion matrix
     cm = confusion_matrix(
         y_test,
         y_pred
     )
 
+
+    # Metrics
     accuracy = accuracy_score(
         y_test,
         y_pred
@@ -372,6 +363,19 @@ for name, model in models.items():
     )
 
 
+    # ROC curve values
+    fpr, tpr, _ = roc_curve(
+        y_test,
+        y_probability
+    )
+
+    plt.plot(
+        fpr,
+        tpr,
+        label=f"{name} (AUC = {auc:.4f})"
+    )
+
+
     print("\n" + "=" * 55)
     print(name)
     print("=" * 55)
@@ -379,25 +383,11 @@ for name, model in models.items():
     print("\nConfusion Matrix:")
     print(cm)
 
-    print(
-        f"\nAccuracy : {accuracy:.4f}"
-    )
-
-    print(
-        f"Precision: {precision:.4f}"
-    )
-
-    print(
-        f"Recall   : {recall:.4f}"
-    )
-
-    print(
-        f"F1 Score : {f1:.4f}"
-    )
-
-    print(
-        f"ROC-AUC  : {auc:.4f}"
-    )
+    print(f"\nAccuracy : {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall   : {recall:.4f}")
+    print(f"F1 Score : {f1:.4f}")
+    print(f"ROC-AUC  : {auc:.4f}")
 
 
     classification_rows.append(
@@ -410,6 +400,27 @@ for name, model in models.items():
             "ROC-AUC": auc
         }
     )
+
+
+# Random classifier reference line
+plt.plot(
+    [0, 1],
+    [0, 1],
+    "k--",
+    label="Random"
+)
+
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+
+plt.title(
+    "ROC Curves - Titanic Survival Classifiers"
+)
+
+plt.legend()
+
+plt.tight_layout()
+plt.show()
 
 
 classification_results = pd.DataFrame(
@@ -426,26 +437,28 @@ print(
 )
 
 
-# IMPORTANT:
-# fit_transform happens ONLY on the training split.
+print("\nClass balance:")
+print(y_train.value_counts())
+
+print("\nClass proportions:")
+print(y_train.value_counts(normalize=True).round(4))
+
+
+# Fit preprocessing only on training split
 imbalance_preprocessor = preprocessor
 
-
-X_train_ready = (
-    imbalance_preprocessor
-    .fit_transform(X_train_model)
+X_train_ready = imbalance_preprocessor.fit_transform(
+    X_train_model
 )
 
-
-# Test set is transform-only.
-X_test_ready = (
-    imbalance_preprocessor
-    .transform(X_test_model)
+# Test is transform-only
+X_test_ready = imbalance_preprocessor.transform(
+    X_test_model
 )
 
 
 # ---------------------------------------------------------
-# 1. Baseline
+# 1. BASELINE
 # ---------------------------------------------------------
 
 baseline_model = RandomForestClassifier(
@@ -453,12 +466,10 @@ baseline_model = RandomForestClassifier(
     random_state=42
 )
 
-
 baseline_model.fit(
     X_train_ready,
     y_train
 )
-
 
 baseline_pred = baseline_model.predict(
     X_test_ready
@@ -466,7 +477,7 @@ baseline_pred = baseline_model.predict(
 
 
 # ---------------------------------------------------------
-# 2. class_weight='balanced'
+# 2. CLASS WEIGHT BALANCED
 # ---------------------------------------------------------
 
 balanced_model = RandomForestClassifier(
@@ -475,12 +486,10 @@ balanced_model = RandomForestClassifier(
     random_state=42
 )
 
-
 balanced_model.fit(
     X_train_ready,
     y_train
 )
-
 
 balanced_pred = balanced_model.predict(
     X_test_ready
@@ -496,11 +505,9 @@ smote = SMOTE(
 )
 
 
-X_train_smote, y_train_smote = (
-    smote.fit_resample(
-        X_train_ready,
-        y_train
-    )
+X_train_smote, y_train_smote = smote.fit_resample(
+    X_train_ready,
+    y_train
 )
 
 
@@ -509,22 +516,17 @@ smote_model = RandomForestClassifier(
     random_state=42
 )
 
-
 smote_model.fit(
     X_train_smote,
     y_train_smote
 )
-
 
 smote_pred = smote_model.predict(
     X_test_ready
 )
 
 
-def imbalance_scores(
-    name,
-    predictions
-):
+def imbalance_scores(name, predictions):
 
     precision = precision_score(
         y_test,
@@ -572,9 +574,7 @@ imbalance_results = pd.DataFrame(
 )
 
 
-print(
-    "\nImbalance Handling Comparison:"
-)
+print("\nImbalance Handling Comparison:")
 
 print(
     imbalance_results.round(4)
@@ -594,16 +594,14 @@ best_imbalance_method = (
 print("\nImbalance Handling Conclusion:")
 
 print(
-    f"{best_imbalance_method['Method']} "
-    "produced the highest F1 score "
-    f"({best_imbalance_method['F1']:.4f}) "
+    f"{best_imbalance_method['Method']} produced the highest "
+    f"F1 score ({best_imbalance_method['F1']:.4f}) "
     "among the three approaches."
 )
 
 print(
     "SMOTE was applied only to the training data, "
-    "so no synthetic test samples were created and "
-    "test-set information did not leak into training."
+    "so no synthetic samples were created from the test data."
 )
 
 
@@ -661,13 +659,8 @@ grid_search.fit(
 best_rf = grid_search.best_estimator_
 
 
-print(
-    "\nBest Parameters:"
-)
-
-print(
-    grid_search.best_params_
-)
+print("\nBest Parameters:")
+print(grid_search.best_params_)
 
 
 print(
@@ -690,7 +683,7 @@ print(
 
 # =========================================================
 # TASK 13: REGRESSION SIDE-TASK
-# Predict FARE using THREE other features
+# PREDICT FARE USING OTHER FEATURES
 # =========================================================
 
 print(
@@ -698,7 +691,6 @@ print(
 )
 
 
-# Three predictor features
 regression_features = [
     "age",
     "pclass",
@@ -716,17 +708,14 @@ y_reg = df[
 ].copy()
 
 
-X_reg_train, X_reg_test, y_reg_train, y_reg_test = (
-    train_test_split(
-        X_reg,
-        y_reg,
-        test_size=0.20,
-        random_state=42
-    )
+X_reg_train, X_reg_test, y_reg_train, y_reg_test = train_test_split(
+    X_reg,
+    y_reg,
+    test_size=0.20,
+    random_state=42
 )
 
 
-# Regression preprocessing
 regression_pipeline = Pipeline(
     steps=[
         (
@@ -735,7 +724,6 @@ regression_pipeline = Pipeline(
                 strategy="median"
             )
         ),
-
         (
             "model",
             LinearRegression()
@@ -756,7 +744,7 @@ y_reg_pred = regression_pipeline.predict(
 
 
 # ---------------------------------------------------------
-# Regression metrics
+# REGRESSION METRICS
 # ---------------------------------------------------------
 
 mae = mean_absolute_error(
@@ -798,25 +786,14 @@ adjusted_r2 = (
 )
 
 
-print(
-    f"\nMAE: {mae:.4f}"
-)
-
-print(
-    f"RMSE: {rmse:.4f}"
-)
-
-print(
-    f"R2: {r2:.4f}"
-)
-
-print(
-    f"Adjusted R2: {adjusted_r2:.4f}"
-)
+print(f"\nMAE: {mae:.4f}")
+print(f"RMSE: {rmse:.4f}")
+print(f"R2: {r2:.4f}")
+print(f"Adjusted R2: {adjusted_r2:.4f}")
 
 
 # ---------------------------------------------------------
-# Residual plot
+# RESIDUAL PLOT
 # ---------------------------------------------------------
 
 residuals = (
@@ -861,7 +838,7 @@ plt.show()
 
 
 # ---------------------------------------------------------
-# Simple numerical heteroscedasticity check
+# HETEROSCEDASTICITY CHECK
 # ---------------------------------------------------------
 
 median_prediction = np.median(
@@ -928,21 +905,18 @@ print("\nHeteroscedasticity Conclusion:")
 if spread_ratio >= 1.5:
 
     print(
-        "The residual spread changes noticeably "
-        "across prediction levels. This suggests "
-        "possible heteroscedasticity."
+        "The residual spread changes noticeably across prediction "
+        "levels. This suggests possible heteroscedasticity."
     )
 
 else:
 
     print(
-        "The residual spread is reasonably similar "
-        "across prediction levels. Strong "
-        "heteroscedasticity is not clearly indicated."
+        "The residual spread is reasonably similar across prediction "
+        "levels. Strong heteroscedasticity is not clearly indicated."
     )
 
 
-# Store regression results
 regression_results = pd.DataFrame(
     {
         "Model": [
@@ -999,19 +973,16 @@ print(
 )
 
 
-print(
-    "\nNote:"
-)
+print("\nNote:")
 
 print(
-    "Classification and regression metrics are "
-    "shown separately because they measure "
-    "different types of prediction tasks and "
-    "are not directly comparable on one scale."
+    "Classification and regression metrics are shown separately "
+    "because they evaluate different prediction tasks and are not "
+    "directly comparable."
 )
 
 
-# Find strongest classifier by F1
+# Best classifier based on F1
 best_classifier_row = (
     classification_results
     .sort_values(
@@ -1035,28 +1006,24 @@ print(
 
 
 print(
-    f"{best_classifier_name} achieved the highest "
-    f"F1 score of {best_classifier_row['F1']:.4f} "
-    "on the held-out test set."
+    f"{best_classifier_name} achieved the highest F1 score "
+    f"of {best_classifier_row['F1']:.4f} on the held-out test set."
 )
 
 print(
     f"It achieved accuracy "
-    f"{best_classifier_row['Accuracy']:.4f} "
-    f"and ROC-AUC "
+    f"{best_classifier_row['Accuracy']:.4f} and ROC-AUC "
     f"{best_classifier_row['ROC-AUC']:.4f}."
 )
 
 print(
-    "The final classifier should balance overall "
-    "accuracy with precision, recall and F1 rather "
-    "than relying on accuracy alone."
+    "The final classifier should balance accuracy, precision, "
+    "recall and F1 rather than relying on accuracy alone."
 )
 
 print(
-    f"Based on this run, {best_classifier_name} "
-    "is recommended as the strongest of the three "
-    "tested classifiers."
+    f"Based on this run, {best_classifier_name} is recommended "
+    "as the strongest of the three tested classifiers."
 )
 
 
@@ -1069,7 +1036,6 @@ print(
 )
 
 
-# Choose the fitted complete pipeline
 if best_classifier_name == "Logistic Regression":
 
     final_pipeline = logistic_model
@@ -1102,7 +1068,7 @@ print(
 
 
 # =========================================================
-# RELOAD PIPELINE
+# RELOAD PIPELINE AND TEST RAW DATA
 # =========================================================
 
 loaded_pipeline = joblib.load(
@@ -1110,7 +1076,6 @@ loaded_pipeline = joblib.load(
 )
 
 
-# Use raw, unprocessed test rows
 sample_data = (
     X_test_model
     .iloc[:5]
@@ -1118,9 +1083,8 @@ sample_data = (
 )
 
 
-sample_predictions = (
-    loaded_pipeline
-    .predict(sample_data)
+sample_predictions = loaded_pipeline.predict(
+    sample_data
 )
 
 
@@ -1157,9 +1121,9 @@ print(
 
 
 print(
-    "\nThe saved artifact includes both preprocessing "
-    "and the final estimator, and it can make predictions "
-    "directly from raw new data."
+    "\nThe saved artifact includes both preprocessing and the "
+    "final estimator, and it can make predictions directly "
+    "from raw new data."
 )
 
 
